@@ -16,8 +16,8 @@ import torchvision
 from torchvision import datasets, models, transforms
 from torchvision.models import resnet34, ResNet34_Weights
 
-torch.manual_seed(57)
-np.random.seed(57)
+torch.manual_seed(12)
+np.random.seed(12)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -27,12 +27,14 @@ data_dir = './data/'
 train_dir = os.path.join(data_dir, 'train')
 val_dir = os.path.join(data_dir, 'val')
 test_dir = os.path.join(data_dir, 'test')
+saved_model_path = 'modified_resnet_model94.pth'
 
-## variables
-batch_size = 64
-num_epochs = 20
+## variables 
+batch_size = 128
+num_epochs = 10
 num_classes = 100
-
+learning_rate = 0.00001
+print(num_epochs, learning_rate)
 class TestImageDataset(Dataset):
     def __init__(self, test_dir, transform=None):
         self.test_dir = test_dir
@@ -52,9 +54,19 @@ class TestImageDataset(Dataset):
             
         # For test data, we'll use the image name instead of a label
         return image, img_name
-    
+        
+stronger_transforms = transforms.Compose([
+    transforms.RandomResizedCrop(224, scale=(0.08, 1.0)),  # More variation in scale
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(p=0.2),  # Add vertical flips
+    transforms.RandomRotation(30),  # More rotation
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),  # Add translation
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
 
-data_transforms = {
+normal_transforms = {
     'train': transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
@@ -79,17 +91,17 @@ data_transforms = {
 
 # Load datasets
 image_datasets = {
-    'train': datasets.ImageFolder(root=train_dir, transform=data_transforms['train']),
-    'val': datasets.ImageFolder(root=val_dir, transform=data_transforms['val']),
-    'test': TestImageDataset(test_dir, data_transforms['test'])
+    'train': datasets.ImageFolder(root=train_dir, transform=normal_transforms['train']),
+    'val': datasets.ImageFolder(root=val_dir, transform=normal_transforms['val']),
+    'test': TestImageDataset(test_dir, normal_transforms['test'])
 }
 print("Class to idx mapping:", image_datasets['train'].class_to_idx)
 
 # Create dataloaders
 dataloaders = {
-    'train': DataLoader(image_datasets['train'], batch_size=64, shuffle=True, num_workers=4),
-    'val': DataLoader(image_datasets['val'], batch_size=64, shuffle=False, num_workers=4),
-    'test': DataLoader(image_datasets['test'], batch_size=64, shuffle=False, num_workers=4)
+    'train': DataLoader(image_datasets['train'], batch_size=batch_size, shuffle=True, num_workers=4),
+    'val': DataLoader(image_datasets['val'], batch_size=batch_size, shuffle=False, num_workers=4),
+    'test': DataLoader(image_datasets['test'], batch_size=batch_size, shuffle=False, num_workers=4)
 }
 
 
@@ -104,7 +116,7 @@ class ModifiedResNet(nn.Module):
     def __init__(self, num_classes=100, use_pretrained=True):
         super(ModifiedResNet, self).__init__()
         
-        # Load pretrained ResNet34 (smaller than ResNet50)
+        # Load pretrained ResNet34
         if use_pretrained:
             self.model = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
         else:
@@ -122,17 +134,43 @@ class ModifiedResNet(nn.Module):
             nn.Linear(512, num_classes)
         )
         
-        # Modification 2: Adjust the final layer to match our number of classes
-        # self.model.fc = nn.Linear(num_ftrs, num_classes)
         
     def forward(self, x):
         return self.model(x)
     
 
 # Initialize the model
-model = ModifiedResNet(use_pretrained=True)
+# model = ModifiedResNet(use_pretrained=True)
 
-saved_model_path = 'modified_resnet_model_087.pth'
+import timm
+
+class ModifiedTimMResNet(nn.Module):
+    def __init__(self, num_classes=100, use_pretrained=True):
+        super(ModifiedTimMResNet, self).__init__()
+        
+        # Choose one of the recommended models
+        self.model = timm.create_model('resnetrs101', pretrained=use_pretrained)
+        
+        # Get the number of features in the final layer
+        num_ftrs = self.model.fc.in_features
+        
+        # You could also experiment with the following modifications to improve accuracy
+        self.model.fc = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(num_ftrs, 1024),  # Wider hidden layer
+            nn.ReLU(),
+            nn.BatchNorm1d(1024),  # Add batch normalization
+            nn.Dropout(0.3),
+            nn.Linear(1024, num_classes)
+        )
+        
+    def forward(self, x):
+        return self.model(x)
+
+
+# Initialize the model
+model = ModifiedTimMResNet(num_classes=num_classes, use_pretrained=True)
+
 if os.path.exists(saved_model_path):
     print(f"Loading previously trained weights from {saved_model_path}")
     # Load weights
@@ -161,12 +199,14 @@ def train_model(model, loss_func, optimizer, scheduler, epochs=25):
     }
     best_weight= copy.deepcopy(model.state_dict()),
     best_acc = 0.0
+    low_loss = 10000
         
     for ep in range(epochs):
         print("current epoch: ", ep)
 
         def train_detail(data, is_train, model, loss_func, optimizer, scheduler):
             nonlocal best_acc
+            nonlocal low_loss
             nonlocal best_weight
             nonlocal history
 
@@ -211,9 +251,14 @@ def train_model(model, loss_func, optimizer, scheduler, epochs=25):
             print(f'Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
             
             # Deep copy the model if it's the best model so far
-            if not is_train and epoch_acc > best_acc:
-                best_acc= epoch_acc
+            if not is_train and epoch_loss < low_loss:
+                # best_acc= epoch_acc
+                low_loss = epoch_loss
                 best_weight = copy.deepcopy(model.state_dict())
+
+                if ep > 10:
+                    # Save the trained model
+                    torch.save(model.state_dict(), 'modified_resnet_model_newest.pth')
             
 
         model.train()
@@ -228,12 +273,12 @@ def train_model(model, loss_func, optimizer, scheduler, epochs=25):
 
 # Optimizer and learning rate scheduler
 loss_func = nn.CrossEntropyLoss()
-# optimizer = optim.Adam(model.parameters(), lr=0.0001)
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 # Learning rate scheduler that reduces LR when validation accuracy plateaus
-# scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3)
-
-optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
 scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3)
+
+# optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
+# scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3)
 
 
 
@@ -241,7 +286,7 @@ scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, pa
 model, history = train_model(model, loss_func, optimizer, scheduler, num_epochs)
 
 # Save the trained model
-torch.save(model.state_dict(), 'modified_resnet_model.pth')
+torch.save(model.state_dict(), 'modified_resnet_model_newest.pth')
 
 # Plot training history
 plt.figure(figsize=(12, 4))
