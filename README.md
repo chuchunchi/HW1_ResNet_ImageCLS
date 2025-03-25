@@ -24,7 +24,7 @@ python3 src/main.py
 
 1. Only need to download test data at `\data\test`
 
-2. Load the checkpoint `modified_resnet_model_best_94.pth` in root folder
+2. Load the checkpoint `modified_resnet_model_best_94.pth` [here](https://drive.google.com/file/d/1SqLxQ8wLZpoKzmmb79Oxx2eY6QHzTmaw/view?usp=drive_link) and put under root folder
 
 3. run evaluation
 
