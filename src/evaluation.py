@@ -159,8 +159,13 @@ scheduler = lr_scheduler.ReduceLROnPlateau(
 
 # Function to create a fixed class_to_idx mapping
 def create_class_mapping():
-    # Create a mapping where folder name matches index
-    return {str(i): i for i in range(100)}
+    # Sort class names (0-99) alphabetically, not numerically
+    class_names = sorted([str(i) for i in range(100)])
+
+    # Create mapping as class_name -> index
+    class2idx = {class_name: idx for idx, class_name in enumerate(class_names)}
+
+    return class2idx
 
 
 def predict_test_data(model, dataloader):
